@@ -1,3 +1,6 @@
+/* 
+ * Atom
+ */
 #include <linux/init.h>
 #include <linux/uaccess.h>
 #include <linux/module.h>
@@ -77,7 +80,7 @@ static ssize_t scull_write(struct file * filp,const char __user * buf,size_t cou
 			return -ERESTARTSYS;
 		}
 
-	*f_pos = *dev->pwf_pos;
+	*f_pos = *dev->pwf_pos;		//从结构体中的写偏移得到偏移量
 	printk("write *f_pos  = %lld\n",*f_pos);
 	item  = (long )*f_pos/itemsize;
 	rest  = (long )*f_pos%itemsize;
@@ -118,7 +121,7 @@ static ssize_t scull_write(struct file * filp,const char __user * buf,size_t cou
 	}
 
 	*dev->pwf_pos += count;
-	*f_pos = *dev->pwf_pos;
+	*f_pos = *dev->pwf_pos; 		//*f_ops是对于整个设备来说的偏移。
 	retval = count;
 
 
@@ -217,6 +220,24 @@ static void scull_setup_cdev(struct scull_dev * device,int index){
 		printk(KERN_NOTICE"Error %d adding scull%d",err,index);
 	}
 }
+
+// ^上面是设备注册，结构体声明的函数
+// v下面是/proc中设备实现
+/*
+ - 要创建一个只读/proc文件，你的驱动必须实现一个函数来在文件被读取时产生数据，当
+ 某个进程读取文件时，这个请求通过这个函数到达你的模块
+ - 当一个进程读你的/proc文件，内核就分配了一页内存(PAGE_SIZE字节)，驱动可以写入数
+ 据来返回给用户空间，那个缓存区传递给你的函数叫：read_proc
+ */
+int (*read_proc)(char * page,char ** start,off_t offset,int count,int *eof,void *data){
+	int i,j,len = 0;
+	int limit = count - 80; /* Don't print more tan this*/
+	for (i = 0; i < scull_nr_devs && len < limit;i++){
+		struct scull_dev * d = scull_dev[i];	
+		struct scull_qset * qs = d->data;	
+	}
+}
+
 
 static void scull_dev_init(struct scull_dev *device,int item){
 	struct scull_dev * dev = device + item;	
