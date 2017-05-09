@@ -4,6 +4,7 @@ obj-m += scull.o
 
 linux_3.6:
 	make -C $(KERN_SRC) ARCH=arm M=`pwd` modules
+	mv scull.ko /opt/_file/dri/scull
 clean:
 	make -C $(KERN_SRC) ARCH=arm M=`pwd` clean
 	rm -f *.ko *.o *.mod.o *.mod.c *.symvers  modul*

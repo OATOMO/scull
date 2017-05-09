@@ -9,12 +9,20 @@
 #include <linux/cdev.h>
 #include <linux/kdev_t.h>
 #include <linux/slab.h>
+#include <linux/proc_fs.h>		//注册卸载proc设备的函数
+#include <linux/seq_file.h>
+
 
 #define SCULL_MAJOR  0   //dynamic alloc dev_t
 #define SCULL_MINOR  0   //dynamic alloc dev_t
 #define SCULL_NR_DEVS  3 //设备数
 #define SCULL_QUANTUM   (4*1024)	//量子大小
 #define SCULL_QSET  	(1000*4)		//量子集大小
+
+//#define SCULL_PROC_READ 
+#ifndef SCULL_PROC_READ
+#define SCULL_SEQ
+#endif
 
 static dev_t scull_major = SCULL_MAJOR;
 static dev_t scull_minor = SCULL_MINOR;
@@ -228,16 +236,135 @@ static void scull_setup_cdev(struct scull_dev * device,int index){
  某个进程读取文件时，这个请求通过这个函数到达你的模块
  - 当一个进程读你的/proc文件，内核就分配了一页内存(PAGE_SIZE字节)，驱动可以写入数
  据来返回给用户空间，那个缓存区传递给你的函数叫：read_proc
+ 原型:
+ int (*read_proc)(char * page,char ** start,off_t offset,int count,int *eof,void *data){
+ 之后再调用create_proc_read_entry()，原型：
+ struct proc_dir_entry * create_proc_read_entry(const char *name,mode_t mode,struct proc_dir_entry * base,
+ 		read_proc_t *read_proc,void * data);
  */
-int (*read_proc)(char * page,char ** start,off_t offset,int count,int *eof,void *data){
+int scull_read_procmem(char * buf,char ** start,off_t offset,int count,int *eof,void *data){
 	int i,j,len = 0;
 	int limit = count - 80; /* Don't print more tan this*/
 	for (i = 0; i < scull_nr_devs && len < limit;i++){
-		struct scull_dev * d = scull_dev[i];	
+		struct scull_dev * d = &scull_dev[i];	
 		struct scull_qset * qs = d->data;	
+		if (down_interruptible(&scull_dev[i].sem))
+				return -ERESTARTSYS;
+		len += sprintf(buf+len,"\nDevice %i:qset %i,q %i,size %li\n",i,d->qset,d->quantum,d->size);
+		for (;qs && len < limit;qs = qs->next){
+			len += sprintf(buf+len,"item at %p,qset at %p\n",qs,qs->data);
+			if (qs->data && !qs->next)
+				for(j = 0;j < d->qset;j++){
+					if (qs->data[j])
+						len += sprintf(buf + len,"%4i: %8p\n",j,qs->data[j]); //打印量子集中最后一个量子的地址
+				}	
+		}
+		up(&scull_dev[i].sem);
 	}
+	*eof = 1;
+	return len;
 }
 
+//上面是/proc
+//下面是seq_file
+/*
+ *一直以来，/proc方法因为当输出数量变大的时的错误实现变得声名狼藉,
+ 所以添加了seq_file接口
+ *使用set_file必须创建一个简单的“iterator”对象，然后创建一个iterator的4个方法
+ start,next,stop,show.
+ *包含与<linux/seq_file.h>
+ * */
+/*void *start(struct seq_file * sfile ,loff_t * pos);
+ *		seq_file :可以被忽略
+ *		pos :是一个整形位置值，指示应当从哪里读，位置的解释完全取决于实现
+ * */
+static void *scull_seq_start(struct seq_file * sfile,loff_t * pos){
+		/*本例中*pos当设备索引来用*/
+	if (*pos >= scull_nr_devs)
+			return NULL; 		/*No more to read*/
+	return scull_dev + *pos;
+}
+/*next函数应当要做的是移动到iterator的下个位置，如果没有就返回NULL
+ *原型:
+ void * next(struct seq_file * sfile,void *v,loff_t *pos);
+ * 		v:是从前一个对start or next的调用的返回的iterator
+ *		pos:是文件当前位置，next应该递增pos指向的值
+ * */
+static void * scull_seq_next(struct seq_file *sfile ,void *v,loff_t *pos){
+	(*pos)++;
+	if (*pos >= scull_nr_devs)
+			return NULL;
+	return scull_dev + *pos;
+}
+/*stop函数完成一些清理工作，但是scull中没有要清理的东西，所有stop方法是空
+ *	void * stop(struct seq_file * sfile ,void *v);
+ * */
+static void scull_seq_stop(struct seq_file * sfile ,void * v){
+}
+/*内核调用show方法来真正的输出有用的东西给用户空间，
+ *原型:
+ *int show(struct seq_file * sfile,void *v);
+ * */
+static int scull_seq_show(struct seq_file * sfile,void * v){
+   /* 这个方法输出iterator v指示的项，不应当使用printk，有一套特殊的用作seq_file的输出函数： 
+	*int seq_printf(struct seq_file * sfile,const char *fmt,...) 如果返回非零，说明缓存已填充
+	*int seq_putc(struct seq_file * sfile,char c)
+	*int seq_puts(struct seq_file * sfile,const char * s);
+	*int seq_escape(struct seq_file * sfile,const char * s,const char * esc);
+	*int seq_path(struct seq_file * sfile,struct vfsmount *m ,struct dentry * dentry,char * esc);
+	* */
+	struct scull_dev * dev = (struct scull_dev *)v;
+	struct scull_qset * d;
+	int i;
+	if (down_interruptible(&dev->sem))
+			return -ERESTARTSYS;
+	seq_printf(sfile,"\nDevice %i: qset -> %i ,q ->%i ,size -> %li\n",
+					(int)(dev - scull_dev),dev->qset,dev->quantum,dev->size);
+	for (d = dev->data;d;d = d->next){
+		seq_printf(sfile,"item at %p,qset at %p\n",d,d->data);	
+		if(d->data && !d->next){		/*dump only the last item*/
+			for (i = 0; i < dev->qset;i++){
+				if(d->data[i])
+					seq_printf(sfile,"%4i: %8p\n",i,d->data[i]);
+			}
+		}
+	}
+	up(&dev->sem);
+	return 0;
+}
+
+/*为了将iterator与/proc链接起来，第一步是填充一个seq_operations结构*/
+static struct seq_operations scull_seq_ops = {
+	.start = scull_seq_start,
+	.next  = scull_seq_next,
+	.stop  = scull_seq_stop,
+	.show  = scull_seq_show	
+};
+
+/*有那个结构在, 我们必须创建一个内核理解的文件实现. 我们不使用前面描述过的
+read_proc 方法; 在使用 seq_file 时, 最好在一个稍低的级别上连接到 /proc. 那意味
+着创建一个 file_operations 结构(是的, 和字符驱动使用的同样结构) 来实现所有内核
+需要的操作, 来处理文件上的读和移动. 幸运的是, 这个任务是简单的. 第一步是创建一
+个 open 方法连接文件到 seq_file 操作*/
+static int scull_proc_open(struct inode * inode,struct file * file){
+	/*调用 seq_open 连接文件结构和我们上面定义的序列操作. 事实证明, open 是我们必须
+自己实现的唯一文件操作*/
+	return seq_open(file,&scull_seq_ops);
+}
+
+static struct file_operations scull_proc_ops = {
+	/*使用预装好的方法 seq_read, seq_lseek, 和seq_release */
+	.owner = THIS_MODULE,
+	.open = scull_proc_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release
+};
+/*最后步骤是创建/proc中实际的文件：
+ *entry = create_proc_entry("scullseq", 0, NULL);
+  if (entry)
+  entry->proc_fops = &scull_proc_ops
+ * */
 
 static void scull_dev_init(struct scull_dev *device,int item){
 	struct scull_dev * dev = device + item;	
@@ -294,7 +421,20 @@ static int __init scull_init(void){
 	//初始化scull结构体
 	scull_dev_init(scull_dev,i);
 	}
-
+#ifdef SCULL_PROC_READ
+	//注册proc设备,现在使用新的接口
+	create_proc_read_entry("scullmem",0 /*default mode*/,
+							NULL /*parent dir*/,scull_read_procmem /*function*/,
+							NULL /*client data*/);
+#endif
+#ifdef SCULL_SEQ
+	struct proc_dir_entry * entry;
+	/*struct proc_dir_entry *create_proc_entry(const char *name,mode_t mode,struct
+proc_dir_entry *parent);*/
+	entry = create_proc_entry("scullseq" /*name*/,0 /*default mode*/,
+								NULL /*parent dir*/);
+			entry->proc_fops = &scull_proc_ops;
+#endif
 return retval;
 }
 
@@ -303,6 +443,10 @@ static void __exit scull_exit(void){
 	for(i = 0;i < scull_nr_devs;i++){
 	scull_dev_uninit(scull_dev,i);	
 	}
+	//卸载proc设备
+#ifdef PROC_READ
+	remove_proc_entry("scullmem",NULL /*parent dir*/);
+#endif
 }
 
 module_init(scull_init);
