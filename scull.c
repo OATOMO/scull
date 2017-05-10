@@ -11,13 +11,51 @@
 #include <linux/slab.h>
 #include <linux/proc_fs.h>		//注册卸载proc设备的函数
 #include <linux/seq_file.h>
-
+#include <linux/ioctl.h>
+#include <linux/capability.h>  		//提供权能操作
 
 #define SCULL_MAJOR  0   //dynamic alloc dev_t
 #define SCULL_MINOR  0   //dynamic alloc dev_t
 #define SCULL_NR_DEVS  3 //设备数
 #define SCULL_QUANTUM   (4*1024)	//量子大小
 #define SCULL_QSET  	(1000*4)		//量子集大小
+
+/****************************************v ioctl*/
+#define SCULL_IOC_MAGIC 'Q' //幻数 ‘Q’
+/*
+ #define _IOC(dir,type,nr,size) \
+       (((dir)  << _IOC_DIRSHIFT) | \
+       ((type) << _IOC_TYPESHIFT) | \
+       ((nr)   << _IOC_NRSHIFT)   | \
+       ((size) << _IOC_SIZESHIFT))
+#define _IO(type,nr)  _IOC(_IOC_NONE,(type),(nr),0)
+#define _IOW(type,nr,size)  _IOC(_IOC_WRITE,(type),(nr),(_IOC_TYPECHECK(size    )))
+上面是源码中这些宏的定义
+*/
+#define SCULL_IOCRESET _IO(SCULL_IOC_MAGIC,0)  
+/*
+ * S :表示通过指针设置（set）
+ * T :表示直接用参数通知（Tell）
+ * G :表示获取（Get），通过设置指针来应答
+ * Q :表示查询（Query），通过返回值应答
+ * X :表示交换（eXchange），原子的交换G和S
+ * H :表示切换（sHift），原子的交换T和Q
+ * */
+#define SCULL_IOCSQUANTUM 	_IOW(SCULL_IOC_MAGIC,1,int)
+#define SCULL_IOCSQSET 		_IOW(SCULL_IOC_MAGIC,2,int)
+#define SCULL_IOCTQUANTUM	_IO (SCULL_IOC_MAGIC,3)
+#define SCULL_IOCTQSET		_IO (SCULL_IOC_MAGIC,4)
+#define SCULL_IOCGQUANTUM  	_IOR(SCULL_IOC_MAGIC,5,int)
+#define SCULL_IOCGQSET		_IOR(SCULL_IOC_MAGIC,6,int)
+#define SCULL_IOCQQUANTUM	_IO (SCULL_IOC_MAGIC,7)
+#define SCULL_IOCQQSET 		_IO (SCULL_IOC_MAGIC,8)
+#define SCULL_IOCHQUANTUM 	_IO (SCULL_IOC_MAGIC,11)
+#define SCULL_IOCHQSET  	_IO (SCULL_IOC_MAGIC,12)
+#define SCULL_IOCXQUANTUM 	_IOWR(SCULL_IOC_MAGIC,9,int)
+#define SCULL_IOCXQSET		_IOWR(SCULL_IOC_MAGIC,10,int)
+
+#define SCULL_IOC_MAXNR 	14 //最大命令号
+/***************************************^ ioctl*/
 
 //#define SCULL_PROC_READ 
 #ifndef SCULL_PROC_READ
@@ -186,6 +224,71 @@ out:
 	return retval; 
 }
 
+//ioctl
+static long scull_ioctl(/*struct inode * inode ,*/struct file * filp,unsigned int cmd,unsigned long arg){
+	int err = 0,tmp;
+	int retval = 0;
+	
+	/*检查命令字段*/
+	if (_IOC_TYPE(cmd) != SCULL_IOC_MAGIC) return -ENOTTY;
+	if (_IOC_NR(cmd) > SCULL_IOC_MAXNR) return -ENOTTY;
+ 	/*需要读写时检查用户空间地址*/
+	if (_IOC_DIR(cmd) & _IOC_WRITE)
+		if(!access_ok(VERIFY_WRITE,(void __user*)arg,_IOC_SIZE(cmd)))
+			return -EFAULT;
+	if (_IOC_DIR(cmd) & _IOC_READ)
+		if(!access_ok(VERIFY_READ,(void __user*)arg,_IOC_SIZE(cmd)))
+			return -EFAULT;
+	switch (cmd){
+		case SCULL_IOCRESET:     /*reset*/
+			scull_dev->quantum = SCULL_QUANTUM;
+			scull_dev->qset = SCULL_QSET;
+			break;
+/*S*/	case SCULL_IOCSQUANTUM:
+			if(!capable(CAP_SYS_ADMIN))	return -EPERM;
+			retval = __get_user(scull_dev->quantum,(int __user *)arg); //用小字节拷贝
+			break;
+		case SCULL_IOCSQSET:
+			if(!capable(CAP_SYS_ADMIN))	return -EPERM;
+			retval = __get_user(scull_dev->qset,(int __user *)arg); //用小字节拷贝
+			break;
+/*T*/	case SCULL_IOCTQUANTUM:
+			if(!capable(CAP_SYS_ADMIN))	return -EPERM;
+			scull_dev->quantum = arg;
+			break;
+		case SCULL_IOCTQSET:
+			if(!capable(CAP_SYS_ADMIN))	return -EPERM;
+			scull_dev->qset = arg;
+			break;
+/*G*/	case SCULL_IOCGQUANTUM:
+			retval = __put_user(scull_dev->quantum,(int __user*)arg);
+			break;
+		case SCULL_IOCGQSET:
+			retval = __put_user(scull_dev->qset,(int __user*)arg);
+			break;
+/*Q*/	case SCULL_IOCQQUANTUM:
+			return scull_dev->quantum;
+		case SCULL_IOCQQSET:
+			return scull_dev->qset;
+/*X*/	case SCULL_IOCXQUANTUM:
+			if(!capable(CAP_SYS_ADMIN))	return -EPERM;
+			tmp = scull_dev->quantum;
+			retval = __get_user(scull_dev->quantum,(int __user *)arg);
+			if(retval == 0)
+				retval = __put_user(tmp,(int __user *)arg);
+			return retval;
+		case SCULL_IOCXQSET:
+			if(!capable(CAP_SYS_ADMIN))	return -EPERM;
+			tmp = scull_dev->qset;
+			retval = __get_user(scull_dev->qset,(int __user *)arg);
+			if(retval == 0)
+				retval = __put_user(tmp,(int __user *)arg);
+			return retval;
+		default:
+			return -ENOTTY;	
+	}
+return retval;
+}
 
 //open
 static int scull_open(struct inode * inode,struct file * filp){
@@ -213,7 +316,8 @@ static struct file_operations scull_fops = {
 	.open 	= scull_open,
 	.release= scull_clean,
 	.write	= scull_write,
-	.read  	= scull_read 
+	.read  	= scull_read,
+	.unlocked_ioctl  = scull_ioctl
 };
 
 static void scull_setup_cdev(struct scull_dev * device,int index){
