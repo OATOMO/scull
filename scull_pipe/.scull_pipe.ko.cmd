@@ -1,0 +1,1 @@
+cmd_/opt/git_Atom/scull/scull_pipe/scull_pipe.ko := /usr/local/arm/arm-2009q3/bin/arm-none-linux-gnueabi-ld -EL -r  -T /opt/kernel/kernel/scripts/module-common.lds --build-id -o /opt/git_Atom/scull/scull_pipe/scull_pipe.ko /opt/git_Atom/scull/scull_pipe/scull_pipe.o /opt/git_Atom/scull/scull_pipe/scull_pipe.mod.o

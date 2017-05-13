@@ -1,14 +1,13 @@
-#cross compiler makefile for FIFO DMA example
-KERN_SRC=/home/atom/software-new/software/linux
-obj-m += scull_pipe.o
 
-linux_3.6:
-	make -C $(KERN_SRC) ARCH=arm M=`pwd` modules
-	mv scull_pipe.ko /opt/_file/dri/scull
+#LINUX2.6
+obj-m = scull_pipe.o
+obj-dir = /opt/_install/_file/scull_pipe
+KERNEL_SRC = /opt/kernel/kernel
+
+linux:
+	make -C $(KERNEL_SRC) ARCH=arm M=`pwd` modules
+	mv scull_pipe.ko $(obj-dir)
+
 clean:
-	make -C $(KERN_SRC) ARCH=arm M=`pwd` clean
-	rm -f *.ko *.o *.mod.o *.mod.c *.symvers  modul* *.bin
-
-linux_2.6:
-	make -C /opt/kernel ARCH=arm M=`pwd` modules
-	
+	make -C $(KERNEL_SRC) ARCH=arm M=`pwd` clean
+	rm -f *.ko *.o *.mod.o *.mod.c *.symvers modul* *.bin
