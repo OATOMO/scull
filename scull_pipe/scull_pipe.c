@@ -116,6 +116,27 @@ static int scull_p_read(struct file * filp,char __user *buf,size_t count,loff_t 
 return count;
 }
 
+//poll
+static unsigned int scull_p_poll(struct file * filp,poll_table * wait){
+	/*
+	 * poll,select调用的目的是为了确定接下来的IO操作是否会阻塞
+	 * */
+	struct scull_pipe * dev = filp->private_data;
+	unsigned int mask;
+	/*
+	 *缓冲区是环形;也就是说,如果wp在rp之后,表示缓冲区已满,而
+	 *如果它们相等,则表明是空
+	 * */
+	down(&dev->sem);
+	poll_wait(filp,&dev->inq ,wait);
+	poll_wait(filp,&dev->outq,wait);
+	if(dev->rp != dev->wp)
+		mask = POLLIN | POLLRDNORM; 	//可读
+	if(spacefree(dev))
+		mask = POLLOUT | POLLWRNORM;	//可写
+	up(&dev->sem);
+return mask;
+} 
 
 
 
